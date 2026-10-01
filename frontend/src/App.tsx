@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { INITIAL_BOOKS, INITIAL_EXCHANGES, INITIAL_USERS } from './mockData';
+import React, { useState, useEffect } from 'react';
 import type { Book, BookStatus, ExchangeHistory, User } from './types';
+import { api } from './api';
 import {
   BookOpen,
   PlusCircle,
@@ -13,22 +13,34 @@ import {
   ArrowRightLeft,
   XCircle,
   MapPin,
-  Calendar,
   Tag,
   Info,
   LogOut,
   LogIn,
   Trash2,
-  Edit3
+  Edit3,
+  Lock,
+  RefreshCw,
 } from 'lucide-react';
 
-export function App() {
-  // State
-  const [users] = useState<User[]>(INITIAL_USERS);
-  const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]); // Default logged in user
-  const [books, setBooks] = useState<Book[]>(INITIAL_BOOKS);
-  const [exchanges, setExchanges] = useState<ExchangeHistory[]>(INITIAL_EXCHANGES);
-  
+export default function App() {
+  // Application State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [exchanges, setExchanges] = useState<ExchangeHistory[]>([]);
+  const [stats, setStats] = useState<{
+    totalBooks: number;
+    availableBooks: number;
+    bookedBooks: number;
+    completedExchanges: number;
+    totalUsers: number;
+    genreDistribution: { genre: string; count: number }[];
+  } | null>(null);
+
+  const [loading, setLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
   // Navigation: 'catalog' | 'details' | 'add' | 'profile' | 'stats' | 'auth'
   const [activeTab, setActiveTab] = useState<string>('catalog');
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
@@ -52,12 +64,96 @@ export function App() {
 
   // Auth Form State
   const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
   const [authName, setAuthName] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authError, setAuthError] = useState('');
 
-  // Genres list for filter
-  const genres = Array.from(new Set(books.map(b => b.genre)));
+  // Auto-dismiss messages
+  useEffect(() => {
+    if (successMsg) {
+      const timer = setTimeout(() => setSuccessMsg(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMsg]);
+
+  // Initial Auth & Data Load
+  useEffect(() => {
+    const initApp = async () => {
+      setLoading(true);
+      try {
+        // Try getting current user if token exists
+        try {
+          const me = await api.auth.me();
+          setCurrentUser(me);
+        } catch {
+          setCurrentUser(null);
+        }
+
+        // Load Books & Stats
+        await loadBooks();
+        await loadStats();
+      } catch (err: any) {
+        console.error('App init error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initApp();
+  }, []);
+
+  // Reload exchanges when user changes or visits profile
+  useEffect(() => {
+    if (currentUser) {
+      loadExchanges();
+    } else {
+      setExchanges([]);
+    }
+  }, [currentUser, activeTab]);
+
+  const loadBooks = async () => {
+    try {
+      const booksData = await api.books.getAll({
+        search: searchQuery,
+        genre: selectedGenre,
+        status: selectedStatus,
+      });
+      setBooks(booksData);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Ошибка загрузки книг');
+    }
+  };
+
+  const loadExchanges = async () => {
+    try {
+      const history = await api.exchanges.getHistory();
+      setExchanges(history);
+    } catch (err: any) {
+      console.error('Error loading exchange history:', err);
+    }
+  };
+
+  const loadStats = async () => {
+    try {
+      const data = await api.stats.getStats();
+      setStats(data);
+    } catch (err: any) {
+      console.error('Error loading stats:', err);
+    }
+  };
+
+  // Re-fetch books when search or filter changes
+  useEffect(() => {
+    const delayDebounceFn = setTimeout(() => {
+      loadBooks();
+    }, 300);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, selectedGenre, selectedStatus]);
+
+  // Genres list for filter dropdown
+  const genresList = Array.from(new Set(['Классика', 'Программирование', 'Фантастика', 'Антиутопия', 'Детектив', 'Приключения', 'Роман', ...books.map((b) => b.genre)]));
 
   // Handlers
   const handleOpenBookDetails = (id: string) => {
@@ -65,97 +161,107 @@ export function App() {
     setActiveTab('details');
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
-    if (!authEmail) {
-      setAuthError('Укажите email');
+    if (!authEmail || !authPassword) {
+      setAuthError('Заполните email и пароль');
       return;
     }
-    const found = users.find(u => u.email.toLowerCase() === authEmail.toLowerCase());
-    if (found) {
-      setCurrentUser(found);
+
+    try {
+      const res = await api.auth.login(authEmail, authPassword);
+      setCurrentUser(res.user);
+      setSuccessMsg(`С возвращением, ${res.user.name}!`);
       setActiveTab('catalog');
-    } else {
-      setAuthError('Пользователь с таким email не найден (попробуйте ivan@example.com)');
+      setAuthPassword('');
+      loadExchanges();
+    } catch (err: any) {
+      setAuthError(err.message || 'Неверный email или пароль');
     }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
-    if (!authName || !authEmail) {
-      setAuthError('Заполните имя и email');
+    if (!authName || !authEmail || !authPassword) {
+      setAuthError('Заполните имя, email и пароль');
       return;
     }
-    const newUser: User = {
-      id: `user-${Date.now()}`,
-      name: authName,
-      email: authEmail,
-    };
-    users.push(newUser);
-    setCurrentUser(newUser);
+
+    try {
+      const res = await api.auth.register(authName, authEmail, authPassword);
+      setCurrentUser(res.user);
+      setSuccessMsg(`Добро пожаловать в BookShare, ${res.user.name}!`);
+      setActiveTab('catalog');
+      setAuthPassword('');
+      loadExchanges();
+    } catch (err: any) {
+      setAuthError(err.message || 'Ошибка регистрации');
+    }
+  };
+
+  const handleLogout = () => {
+    api.auth.logout();
+    setCurrentUser(null);
+    setExchanges([]);
+    setSuccessMsg('Вы успешно вышли из системы');
     setActiveTab('catalog');
   };
 
-  const handleCreateOrUpdateBook = (e: React.FormEvent) => {
+  const handleCreateOrUpdateBook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) return;
 
     if (!bookForm.title || !bookForm.author || !bookForm.pickupLocation) {
-      alert('Пожалуйста, заполните обязательные поля (Название, Автор, Место передачи)');
+      setErrorMsg('Пожалуйста, заполните обязательные поля (Название, Автор, Место передачи)');
       return;
     }
 
-    if (editingBookId) {
-      // Edit mode
-      setBooks(prev =>
-        prev.map(b =>
-          b.id === editingBookId
-            ? {
-                ...b,
-                title: bookForm.title,
-                author: bookForm.author,
-                genre: bookForm.genre,
-                year: Number(bookForm.year),
-                description: bookForm.description,
-                condition: bookForm.condition,
-                pickupLocation: bookForm.pickupLocation,
-              }
-            : b
-        )
-      );
-      setEditingBookId(null);
-    } else {
-      // Add mode
-      const newBook: Book = {
-        id: `book-${Date.now()}`,
-        title: bookForm.title,
-        author: bookForm.author,
-        genre: bookForm.genre,
-        year: Number(bookForm.year),
-        description: bookForm.description,
-        condition: bookForm.condition,
-        ownerId: currentUser.id,
-        ownerName: currentUser.name,
-        status: 'Доступна',
-        pickupLocation: bookForm.pickupLocation,
-        createdAt: new Date().toISOString().split('T')[0],
-      };
-      setBooks([newBook, ...books]);
-    }
+    try {
+      if (editingBookId) {
+        // Edit mode
+        await api.books.update(editingBookId, {
+          title: bookForm.title,
+          author: bookForm.author,
+          genre: bookForm.genre,
+          year: Number(bookForm.year),
+          description: bookForm.description,
+          condition: bookForm.condition,
+          pickupLocation: bookForm.pickupLocation,
+        });
+        setSuccessMsg('Информация о книге обновлена');
+        setEditingBookId(null);
+      } else {
+        // Add mode
+        await api.books.create({
+          title: bookForm.title,
+          author: bookForm.author,
+          genre: bookForm.genre,
+          year: Number(bookForm.year),
+          description: bookForm.description,
+          condition: bookForm.condition,
+          pickupLocation: bookForm.pickupLocation,
+        });
+        setSuccessMsg('Книга успешно добавлена в каталог!');
+      }
 
-    // Reset Form
-    setBookForm({
-      title: '',
-      author: '',
-      genre: 'Классика',
-      year: new Date().getFullYear(),
-      description: '',
-      condition: 'Отличное',
-      pickupLocation: '',
-    });
-    setActiveTab('catalog');
+      // Reset Form & Reload Data
+      setBookForm({
+        title: '',
+        author: '',
+        genre: 'Классика',
+        year: new Date().getFullYear(),
+        description: '',
+        condition: 'Отличное',
+        pickupLocation: '',
+      });
+      await loadBooks();
+      await loadStats();
+      setActiveTab('catalog');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Ошибка сохранения книги');
+    }
   };
 
   const handleStartEdit = (book: Book) => {
@@ -172,117 +278,123 @@ export function App() {
     setActiveTab('add');
   };
 
-  const handleDeleteBook = (bookId: string) => {
-    if (confirm('Вы уверены, что хотите удалить эту книгу?')) {
-      setBooks(prev => prev.filter(b => b.id !== bookId));
-      if (selectedBookId === bookId) {
-        setActiveTab('catalog');
+  const handleDeleteBook = async (bookId: string) => {
+    if (window.confirm('Вы уверены, что хотите удалить эту книгу?')) {
+      try {
+        await api.books.delete(bookId);
+        setSuccessMsg('Книга удалена');
+        await loadBooks();
+        await loadStats();
+        if (selectedBookId === bookId) {
+          setActiveTab('catalog');
+        }
+      } catch (err: any) {
+        setErrorMsg(err.message || 'Ошибка удаления книги');
       }
     }
   };
 
-  const handleBookExchange = (book: Book) => {
+  const handleBookExchange = async (book: Book) => {
     if (!currentUser) {
       setActiveTab('auth');
       return;
     }
     if (book.ownerId === currentUser.id) {
-      alert('Вы не можете забронировать свою собственную книгу');
+      setErrorMsg('Вы не можете забронировать собственную книгу');
       return;
     }
 
-    // Update book status
-    setBooks(prev =>
-      prev.map(b => (b.id === book.id ? { ...b, status: 'Забронирована' } : b))
-    );
-
-    // Add exchange history record
-    const newExchange: ExchangeHistory = {
-      id: `ex-${Date.now()}`,
-      bookId: book.id,
-      bookTitle: book.title,
-      ownerId: book.ownerId,
-      ownerName: book.ownerName,
-      recipientId: currentUser.id,
-      recipientName: currentUser.name,
-      bookingDate: new Date().toISOString().split('T')[0],
-      status: 'Забронирована',
-    };
-
-    setExchanges([newExchange, ...exchanges]);
-    alert(`Вы успешно забронировали книгу "${book.title}"! Свяжитесь с владельцем (${book.ownerName}).`);
+    try {
+      await api.exchanges.bookBook(book.id);
+      setSuccessMsg(`Вы успешно забронировали книгу "${book.title}"! Свяжитесь с владельцем (${book.ownerName}).`);
+      await loadBooks();
+      await loadExchanges();
+      await loadStats();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Ошибка бронирования');
+    }
   };
 
-  const handleChangeStatus = (bookId: string, newStatus: BookStatus) => {
-    setBooks(prev =>
-      prev.map(b => (b.id === bookId ? { ...b, status: newStatus } : b))
-    );
-
-    setExchanges(prev =>
-      prev.map(ex =>
-        ex.bookId === bookId
-          ? {
-              ...ex,
-              status: newStatus,
-              completionDate:
-                newStatus === 'Возвращена'
-                  ? new Date().toISOString().split('T')[0]
-                  : ex.completionDate,
-            }
-          : ex
-      )
-    );
+  const handleChangeStatus = async (exchangeId: string, newStatus: BookStatus) => {
+    try {
+      await api.exchanges.updateStatus(exchangeId, newStatus);
+      setSuccessMsg(`Статус обмена изменен на "${newStatus}"`);
+      await loadBooks();
+      await loadExchanges();
+      await loadStats();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Ошибка изменения статуса');
+    }
   };
 
-  // Filtered Books
-  const filteredBooks = books.filter(b => {
-    const matchesSearch =
-      b.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      b.author.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesGenre = selectedGenre ? b.genre === selectedGenre : true;
-    const matchesStatus = selectedStatus ? b.status === selectedStatus : true;
-    return matchesSearch && matchesGenre && matchesStatus;
-  });
-
-  const selectedBook = books.find(b => b.id === selectedBookId);
+  const selectedBook = books.find((b) => b.id === selectedBookId);
 
   // Status Badge Helper Component
   const renderStatusBadge = (status: BookStatus) => {
     switch (status) {
       case 'Доступна':
-        return <span className="status-badge available"><CheckCircle size={14} /> Доступна</span>;
+        return (
+          <span className="badge badge-success">
+            <CheckCircle className="icon-sm" /> Доступна
+          </span>
+        );
       case 'Забронирована':
-        return <span className="status-badge reserved"><Clock size={14} /> Забронирована</span>;
+        return (
+          <span className="badge badge-warning">
+            <Clock className="icon-sm" /> Забронирована
+          </span>
+        );
       case 'Выдана':
-        return <span className="status-badge issued"><ArrowRightLeft size={14} /> Выдана</span>;
+        return (
+          <span className="badge badge-primary">
+            <ArrowRightLeft className="icon-sm" /> Выдана
+          </span>
+        );
       case 'Возвращена':
-        return <span className="status-badge returned"><XCircle size={14} /> Возвращена</span>;
+        return (
+          <span className="badge badge-neutral">
+            <XCircle className="icon-sm" /> Возвращена
+          </span>
+        );
       default:
-        return null;
+        return <span className="badge">{status}</span>;
     }
   };
 
   return (
-    <div>
-      {/* Top Navbar */}
-      <nav className="glass-nav">
-        <div className="app-header">
-          <div className="logo-group" onClick={() => setActiveTab('catalog')}>
-            <div className="logo-icon">
-              <BookOpen size={22} />
-            </div>
-            <span>BookShare</span>
+    <div className="app-container">
+      {/* Header / Navbar */}
+      <header className="navbar glass-header">
+        <div className="brand" onClick={() => setActiveTab('catalog')} style={{ cursor: 'pointer' }}>
+          <div className="brand-logo">
+            <BookOpen className="brand-icon" />
           </div>
+          <div>
+            <span className="brand-title">BookShare</span>
+            <span className="brand-subtitle">Платформа обмена книгами</span>
+          </div>
+        </div>
 
-          <div className="nav-links">
-            <button
-              className={`nav-btn ${activeTab === 'catalog' ? 'active' : ''}`}
-              onClick={() => setActiveTab('catalog')}
-            >
-              <BookOpen size={18} /> Каталог
-            </button>
+        <nav className="nav-links">
+          <button
+            className={`nav-btn ${activeTab === 'catalog' ? 'active' : ''}`}
+            onClick={() => setActiveTab('catalog')}
+          >
+            <BookOpen className="icon-sm" /> Каталог
+          </button>
+          
+          <button
+            className={`nav-btn ${activeTab === 'stats' ? 'active' : ''}`}
+            onClick={() => {
+              loadStats();
+              setActiveTab('stats');
+            }}
+          >
+            <BarChart3 className="icon-sm" /> Статистика
+          </button>
 
-            {currentUser && (
+          {currentUser ? (
+            <>
               <button
                 className={`nav-btn ${activeTab === 'add' ? 'active' : ''}`}
                 onClick={() => {
@@ -299,669 +411,636 @@ export function App() {
                   setActiveTab('add');
                 }}
               >
-                <PlusCircle size={18} /> Добавить книгу
+                <PlusCircle className="icon-sm" /> Добавить книгу
               </button>
-            )}
 
-            {currentUser && (
               <button
                 className={`nav-btn ${activeTab === 'profile' ? 'active' : ''}`}
                 onClick={() => setActiveTab('profile')}
               >
-                <UserIcon size={18} /> Личный кабинет
+                <UserIcon className="icon-sm" /> Личный кабинет ({currentUser.name})
               </button>
-            )}
 
+              <button className="nav-btn nav-btn-logout" onClick={handleLogout} title="Выйти">
+                <LogOut className="icon-sm" />
+              </button>
+            </>
+          ) : (
             <button
-              className={`nav-btn ${activeTab === 'stats' ? 'active' : ''}`}
-              onClick={() => setActiveTab('stats')}
+              className={`nav-btn nav-btn-primary ${activeTab === 'auth' ? 'active' : ''}`}
+              onClick={() => setActiveTab('auth')}
             >
-              <BarChart3 size={18} /> Статистика
+              <LogIn className="icon-sm" /> Войти
             </button>
+          )}
+        </nav>
+      </header>
 
-            {currentUser ? (
-              <div className="user-badge" style={{ marginLeft: '0.75rem' }}>
-                <div className="avatar">{currentUser.name.charAt(0)}</div>
-                <span>{currentUser.name}</span>
-                <button
-                  title="Выйти"
-                  onClick={() => setCurrentUser(null)}
-                  style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', marginLeft: '4px' }}
-                >
-                  <LogOut size={16} />
-                </button>
-              </div>
-            ) : (
-              <button
-                className="btn-primary"
-                style={{ padding: '0.5rem 1rem', fontSize: '0.88rem' }}
-                onClick={() => setActiveTab('auth')}
-              >
-                <LogIn size={16} /> Войти
-              </button>
-            )}
-          </div>
+      {/* Alert Notifications */}
+      {errorMsg && (
+        <div className="toast toast-error">
+          <span>{errorMsg}</span>
+          <button onClick={() => setErrorMsg(null)}>✕</button>
         </div>
-      </nav>
+      )}
 
-      {/* Main Content Body */}
+      {successMsg && (
+        <div className="toast toast-success">
+          <span>{successMsg}</span>
+          <button onClick={() => setSuccessMsg(null)}>✕</button>
+        </div>
+      )}
+
+      {/* Main Content Area */}
       <main className="main-content">
-        {/* TAB 1: CATALOG */}
+        {loading && (
+          <div className="loading-spinner">
+            <RefreshCw className="spin-icon" /> Загрузка данных...
+          </div>
+        )}
+
+        {/* 1. CATALOG TAB */}
         {activeTab === 'catalog' && (
-          <div className="animate-fade-in">
-            {/* Header Banner */}
-            <div className="glass-panel" style={{ padding: '2rem', marginBottom: '2rem', background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.05))' }}>
-              <h1 style={{ fontSize: '2rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-                Книгообмен в университете и городе
-              </h1>
-              <p style={{ color: 'var(--text-muted)', maxWidth: '650px' }}>
-                Делитесь прочитанными книгами, находите интересные произведения и давайте знаниям вторую жизнь!
-              </p>
+          <section className="catalog-section">
+            <div className="section-header">
+              <h2>Каталог книг для обмена</h2>
+              <p>Найдите интересующую вас книгу или поделитесь своей с другими пользователями</p>
             </div>
 
-            {/* Search & Filter Bar */}
-            <div className="glass-panel" style={{ padding: '1.25rem', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: '1rem', alignItems: 'center' }}>
-              <div style={{ position: 'relative' }}>
-                <Search size={18} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            {/* Search & Filters */}
+            <div className="filter-bar glass-card">
+              <div className="search-box">
+                <Search className="search-icon" />
                 <input
                   type="text"
-                  className="input-field"
-                  style={{ paddingLeft: '2.5rem' }}
-                  placeholder="Поиск по названию или автору..."
+                  placeholder="Поиск по названию, автору или описанию..."
                   value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                 />
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <Filter size={18} style={{ color: 'var(--text-muted)' }} />
-                <select
-                  className="select-field"
-                  value={selectedGenre}
-                  onChange={e => setSelectedGenre(e.target.value)}
-                  style={{ width: '160px' }}
-                >
-                  <option value="">Все жанры</option>
-                  {genres.map(g => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
-              </div>
+              <div className="filters-group">
+                <div className="select-wrapper">
+                  <Filter className="select-icon" />
+                  <select
+                    value={selectedGenre}
+                    onChange={(e) => setSelectedGenre(e.target.value)}
+                  >
+                    <option value="">Все жанры</option>
+                    {genresList.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div>
-                <select
-                  className="select-field"
-                  value={selectedStatus}
-                  onChange={e => setSelectedStatus(e.target.value)}
-                  style={{ width: '160px' }}
-                >
-                  <option value="">Все статусы</option>
-                  <option value="Доступна">Доступна</option>
-                  <option value="Забронирована">Забронирована</option>
-                  <option value="Выдана">Выдана</option>
-                  <option value="Возвращена">Возвращена</option>
-                </select>
+                <div className="select-wrapper">
+                  <select
+                    value={selectedStatus}
+                    onChange={(e) => setSelectedStatus(e.target.value)}
+                  >
+                    <option value="">Все статусы</option>
+                    <option value="Доступна">Доступна</option>
+                    <option value="Забронирована">Забронирована</option>
+                    <option value="Выдана">Выдана</option>
+                    <option value="Возвращена">Возвращена</option>
+                  </select>
+                </div>
               </div>
             </div>
 
             {/* Books Grid */}
-            {filteredBooks.length === 0 ? (
-              <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', marginTop: '1.5rem' }}>
-                <Info size={40} style={{ color: 'var(--text-subtle)', marginBottom: '0.75rem' }} />
-                <p style={{ color: 'var(--text-muted)', fontSize: '1.1rem' }}>По вашему запросу ничего не найдено.</p>
+            {books.length === 0 ? (
+              <div className="empty-state glass-card">
+                <Info className="empty-icon" />
+                <h3>Книги не найдены</h3>
+                <p>Попробуйте изменить параметры поиска или сбросить фильтры</p>
               </div>
             ) : (
               <div className="books-grid">
-                {filteredBooks.map(book => (
-                  <div
-                    key={book.id}
-                    className="glass-panel book-card"
-                    onClick={() => handleOpenBookDetails(book.id)}
-                  >
-                    <div>
-                      <div className="book-card-header">
-                        <div>
-                          <h3 className="book-title">{book.title}</h3>
-                          <p className="book-author">{book.author} ({book.year})</p>
-                        </div>
-                      </div>
-                      <div>
-                        {renderStatusBadge(book.status)}
-                        <br />
-                        <span className="book-genre-tag">{book.genre}</span>
-                      </div>
-                      <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginTop: '0.85rem', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                        {book.description}
-                      </p>
+                {books.map((book) => (
+                  <div key={book.id} className="book-card glass-card">
+                    <div className="card-header">
+                      <span className="genre-tag">{book.genre}</span>
+                      {renderStatusBadge(book.status)}
                     </div>
 
-                    <div className="book-card-footer">
-                      <span>Владелец: {book.ownerName}</span>
-                      <span>{book.condition}</span>
+                    <h3 className="book-title">{book.title}</h3>
+                    <p className="book-author">Автор: {book.author}</p>
+                    <p className="book-year">Год издания: {book.year}</p>
+                    <p className="book-desc">{book.description}</p>
+
+                    <div className="book-meta">
+                      <div className="meta-item">
+                        <Tag className="meta-icon" /> Состояние: {book.condition}
+                      </div>
+                      <div className="meta-item">
+                        <UserIcon className="meta-icon" /> Владелец: {book.ownerName}
+                      </div>
+                      <div className="meta-item">
+                        <MapPin className="meta-icon" /> {book.pickupLocation}
+                      </div>
+                    </div>
+
+                    <div className="card-actions">
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => handleOpenBookDetails(book.id)}
+                      >
+                        Подробнее
+                      </button>
+
+                      {book.status === 'Доступна' && currentUser?.id !== book.ownerId && (
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => handleBookExchange(book)}
+                        >
+                          Забронировать
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             )}
-          </div>
+          </section>
         )}
 
-        {/* TAB 2: BOOK DETAILS */}
+        {/* 2. BOOK DETAILS TAB */}
         {activeTab === 'details' && selectedBook && (
-          <div className="animate-fade-in" style={{ maxWidth: '800px', margin: '0 auto' }}>
-            <button
-              className="btn-secondary"
-              onClick={() => setActiveTab('catalog')}
-              style={{ marginBottom: '1.5rem' }}
-            >
+          <section className="details-section glass-card">
+            <button className="btn btn-link" onClick={() => setActiveTab('catalog')}>
               ← Назад в каталог
             </button>
 
-            <div className="glass-panel" style={{ padding: '2rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-                <div>
-                  <h1 style={{ fontSize: '2rem', fontWeight: 800 }}>{selectedBook.title}</h1>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '1.1rem', marginTop: '0.2rem' }}>
-                    Автор: <strong style={{ color: 'var(--text-main)' }}>{selectedBook.author}</strong> ({selectedBook.year})
-                  </p>
-                </div>
-                <div>{renderStatusBadge(selectedBook.status)}</div>
-              </div>
-
-              <hr style={{ border: 'none', borderTop: '1px solid var(--border-color)', margin: '1.5rem 0' }} />
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: 'var(--radius-md)' }}>
-                  <div style={{ color: 'var(--text-subtle)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Tag size={14} /> Жанр
-                  </div>
-                  <div style={{ fontWeight: 600, marginTop: '0.3rem' }}>{selectedBook.genre}</div>
-                </div>
-
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: 'var(--radius-md)' }}>
-                  <div style={{ color: 'var(--text-subtle)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <Calendar size={14} /> Состояние
-                  </div>
-                  <div style={{ fontWeight: 600, marginTop: '0.3rem' }}>{selectedBook.condition}</div>
-                </div>
-
-                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: 'var(--radius-md)' }}>
-                  <div style={{ color: 'var(--text-subtle)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                    <MapPin size={14} /> Место передачи
-                  </div>
-                  <div style={{ fontWeight: 600, marginTop: '0.3rem' }}>{selectedBook.pickupLocation}</div>
-                </div>
-              </div>
-
-              <div style={{ marginBottom: '1.5rem' }}>
-                <h3 style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>Описание</h3>
-                <p style={{ color: 'var(--text-muted)', lineHeight: '1.6' }}>{selectedBook.description || 'Описание отсутствует.'}</p>
-              </div>
-
-              <div style={{ background: 'rgba(99, 102, 241, 0.08)', padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(99, 102, 241, 0.2)', marginBottom: '2rem' }}>
-                <h4 style={{ fontSize: '0.95rem', color: '#a5b4fc', marginBottom: '0.3rem' }}>Информация о владельце</h4>
-                <p style={{ fontSize: '0.95rem' }}>Разместил: <strong>{selectedBook.ownerName}</strong></p>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Дата добавления: {selectedBook.createdAt}</p>
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-                {selectedBook.status === 'Доступна' && (
-                  <button
-                    className="btn-primary"
-                    style={{ flex: 1 }}
-                    onClick={() => handleBookExchange(selectedBook)}
-                  >
-                    Забронировать книгу
-                  </button>
-                )}
-
-                {currentUser && currentUser.id === selectedBook.ownerId && (
-                  <>
-                    <button
-                      className="btn-secondary"
-                      onClick={() => handleStartEdit(selectedBook)}
-                    >
-                      <Edit3 size={16} /> Редактировать
-                    </button>
-                    <button
-                      className="btn-danger"
-                      onClick={() => handleDeleteBook(selectedBook.id)}
-                    >
-                      <Trash2 size={16} /> Удалить
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: ADD OR EDIT BOOK */}
-        {activeTab === 'add' && currentUser && (
-          <div className="animate-fade-in" style={{ maxWidth: '650px', margin: '0 auto' }}>
-            <div className="glass-panel" style={{ padding: '2rem' }}>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '1.5rem' }}>
-                {editingBookId ? 'Редактирование книги' : 'Добавление новой книги'}
-              </h2>
-
-              <form onSubmit={handleCreateOrUpdateBook} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Название книги *</label>
-                  <input
-                    type="text"
-                    className="input-field"
-                    required
-                    placeholder="Например: Совершенный код"
-                    value={bookForm.title}
-                    onChange={e => setBookForm({ ...bookForm, title: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Автор *</label>
-                    <input
-                      type="text"
-                      className="input-field"
-                      required
-                      placeholder="Стив Макконнелл"
-                      value={bookForm.author}
-                      onChange={e => setBookForm({ ...bookForm, author: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Жанр</label>
-                    <select
-                      className="select-field"
-                      value={bookForm.genre}
-                      onChange={e => setBookForm({ ...bookForm, genre: e.target.value })}
-                    >
-                      <option value="Классика">Классика</option>
-                      <option value="Программирование">Программирование</option>
-                      <option value="Фантастика">Фантастика</option>
-                      <option value="Антиутопия">Антиутопия</option>
-                      <option value="Приключения">Приключения</option>
-                      <option value="Фэнтези">Фэнтези</option>
-                      <option value="Наука и Учеба">Наука и Учеба</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Год издания</label>
-                    <input
-                      type="number"
-                      className="input-field"
-                      value={bookForm.year}
-                      onChange={e => setBookForm({ ...bookForm, year: Number(e.target.value) })}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Состояние книги</label>
-                    <select
-                      className="select-field"
-                      value={bookForm.condition}
-                      onChange={e => setBookForm({ ...bookForm, condition: e.target.value })}
-                    >
-                      <option value="Новое">Новое</option>
-                      <option value="Отличное">Отличное</option>
-                      <option value="Хорошее">Хорошее</option>
-                      <option value="Зачитанное">Зачитанное</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Место передачи *</label>
-                  <input
-                    type="text"
-                    className="input-field"
-                    required
-                    placeholder="Например: Корпус МТУСИ на Авиамоторной"
-                    value={bookForm.pickupLocation}
-                    onChange={e => setBookForm({ ...bookForm, pickupLocation: e.target.value })}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Описание</label>
-                  <textarea
-                    className="textarea-field"
-                    rows={4}
-                    placeholder="Коротко опишите книгу или условия обмена..."
-                    value={bookForm.description}
-                    onChange={e => setBookForm({ ...bookForm, description: e.target.value })}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                  <button type="submit" className="btn-primary" style={{ flex: 1 }}>
-                    {editingBookId ? 'Сохранить изменения' : 'Опубликовать книгу'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setActiveTab('catalog')}
-                  >
-                    Отмена
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: PROFILE */}
-        {activeTab === 'profile' && currentUser && (
-          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-            <div className="glass-panel" style={{ padding: '1.75rem', display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-              <div className="avatar" style={{ width: '64px', height: '64px', fontSize: '1.8rem' }}>
-                {currentUser.name.charAt(0)}
-              </div>
+            <div className="details-header">
               <div>
-                <h2 style={{ fontSize: '1.5rem', fontWeight: 800 }}>{currentUser.name}</h2>
-                <p style={{ color: 'var(--text-muted)' }}>{currentUser.email}</p>
+                <h2>{selectedBook.title}</h2>
+                <p className="details-subtitle">Автор: {selectedBook.author}</p>
               </div>
+              {renderStatusBadge(selectedBook.status)}
             </div>
 
-            {/* My Books Section */}
-            <div>
-              <h3 style={{ fontSize: '1.3rem', marginBottom: '1rem' }}>Мои выложенные книги</h3>
-              {books.filter(b => b.ownerId === currentUser.id).length === 0 ? (
-                <div className="glass-panel" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                  Вы еще не выложили ни одной книги.
-                </div>
-              ) : (
-                <div className="books-grid">
-                  {books.filter(b => b.ownerId === currentUser.id).map(book => (
-                    <div key={book.id} className="glass-panel book-card">
-                      <div>
-                        <div className="book-card-header">
-                          <h4 className="book-title">{book.title}</h4>
-                        </div>
-                        {renderStatusBadge(book.status)}
-                        
-                        {/* Status Change control for owner */}
-                        <div style={{ marginTop: '1rem' }}>
-                          <label style={{ fontSize: '0.75rem', color: 'var(--text-subtle)', display: 'block', marginBottom: '0.3rem' }}>Изменить статус:</label>
-                          <select
-                            className="select-field"
-                            style={{ padding: '0.4rem', fontSize: '0.85rem' }}
-                            value={book.status}
-                            onChange={e => handleChangeStatus(book.id, e.target.value as BookStatus)}
-                          >
-                            <option value="Доступна">Доступна</option>
-                            <option value="Забронирована">Забронирована</option>
-                            <option value="Выдана">Выдана</option>
-                            <option value="Возвращена">Возвращена</option>
-                          </select>
-                        </div>
-                      </div>
+            <div className="details-grid">
+              <div className="details-info">
+                <h3>О книге</h3>
+                <p>{selectedBook.description}</p>
 
-                      <div className="book-card-footer" style={{ marginTop: '1rem' }}>
-                        <button className="btn-secondary" style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }} onClick={() => handleStartEdit(book)}>
-                          <Edit3 size={14} /> Редактировать
-                        </button>
-                        <button className="btn-danger" style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }} onClick={() => handleDeleteBook(book.id)}>
-                          <Trash2 size={14} /> Удалить
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Reserved Books by Me */}
-            <div>
-              <h3 style={{ fontSize: '1.3rem', marginBottom: '1rem' }}>Забронированные мной книги</h3>
-              {exchanges.filter(ex => ex.recipientId === currentUser.id).length === 0 ? (
-                <div className="glass-panel" style={{ padding: '2rem', color: 'var(--text-muted)' }}>
-                  У вас нет активных или завершенных бронирований.
-                </div>
-              ) : (
-                <div className="glass-panel" style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.92rem' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-                        <th style={{ padding: '1rem' }}>Книга</th>
-                        <th style={{ padding: '1rem' }}>Владелец</th>
-                        <th style={{ padding: '1rem' }}>Дата брони</th>
-                        <th style={{ padding: '1rem' }}>Статус</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exchanges.filter(ex => ex.recipientId === currentUser.id).map(ex => (
-                        <tr key={ex.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                          <td style={{ padding: '1rem', fontWeight: 600 }}>{ex.bookTitle}</td>
-                          <td style={{ padding: '1rem' }}>{ex.ownerName}</td>
-                          <td style={{ padding: '1rem', color: 'var(--text-muted)' }}>{ex.bookingDate}</td>
-                          <td style={{ padding: '1rem' }}>{renderStatusBadge(ex.status)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            {/* History Section */}
-            <div>
-              <h3 style={{ fontSize: '1.3rem', marginBottom: '1rem' }}>История обменов</h3>
-              <div className="glass-panel" style={{ padding: '1.5rem' }}>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-                  Все операции с вашим участием (в качестве владельца или получателя).
-                </p>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.92rem' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-                        <th style={{ padding: '0.75rem' }}>Книга</th>
-                        <th style={{ padding: '0.75rem' }}>Владелец</th>
-                        <th style={{ padding: '0.75rem' }}>Получатель</th>
-                        <th style={{ padding: '0.75rem' }}>Дата брони</th>
-                        <th style={{ padding: '0.75rem' }}>Завершено</th>
-                        <th style={{ padding: '0.75rem' }}>Статус</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exchanges.filter(ex => ex.ownerId === currentUser.id || ex.recipientId === currentUser.id).map(ex => (
-                        <tr key={ex.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                          <td style={{ padding: '0.75rem', fontWeight: 600 }}>{ex.bookTitle}</td>
-                          <td style={{ padding: '0.75rem' }}>{ex.ownerName}</td>
-                          <td style={{ padding: '0.75rem' }}>{ex.recipientName}</td>
-                          <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>{ex.bookingDate}</td>
-                          <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>{ex.completionDate || '—'}</td>
-                          <td style={{ padding: '0.75rem' }}>{renderStatusBadge(ex.status)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 5: STATS */}
-        {activeTab === 'stats' && (
-          <div className="animate-fade-in">
-            <h1 style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '1.5rem' }}>
-              Статистика платформы обмена
-            </h1>
-
-            <div className="stats-grid">
-              <div className="glass-panel stat-card">
-                <div className="stat-icon"><BookOpen size={28} /></div>
-                <div>
-                  <div className="stat-value">{books.length}</div>
-                  <div className="stat-label">Всего книг в системе</div>
+                <div className="info-list">
+                  <div className="info-row">
+                    <span>Жанр:</span> <strong>{selectedBook.genre}</strong>
+                  </div>
+                  <div className="info-row">
+                    <span>Год издания:</span> <strong>{selectedBook.year}</strong>
+                  </div>
+                  <div className="info-row">
+                    <span>Состояние:</span> <strong>{selectedBook.condition}</strong>
+                  </div>
+                  <div className="info-row">
+                    <span>Место встречи/передачи:</span> <strong>{selectedBook.pickupLocation}</strong>
+                  </div>
                 </div>
               </div>
 
-              <div className="glass-panel stat-card">
-                <div className="stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#6ee7b7' }}>
-                  <CheckCircle size={28} />
-                </div>
-                <div>
-                  <div className="stat-value">{books.filter(b => b.status === 'Доступна').length}</div>
-                  <div className="stat-label">Доступных для брони</div>
-                </div>
-              </div>
-
-              <div className="glass-panel stat-card">
-                <div className="stat-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#fcd34d' }}>
-                  <Clock size={28} />
-                </div>
-                <div>
-                  <div className="stat-value">{books.filter(b => b.status === 'Забронирована').length}</div>
-                  <div className="stat-label">Забронированных сейчас</div>
-                </div>
-              </div>
-
-              <div className="glass-panel stat-card">
-                <div className="stat-icon" style={{ background: 'rgba(14, 165, 233, 0.15)', color: '#7dd3fc' }}>
-                  <ArrowRightLeft size={28} />
-                </div>
-                <div>
-                  <div className="stat-value">{exchanges.filter(ex => ex.status === 'Возвращена').length}</div>
-                  <div className="stat-label">Завершённых обменов</div>
-                </div>
-              </div>
-
-              <div className="glass-panel stat-card">
-                <div className="stat-icon" style={{ background: 'rgba(139, 92, 246, 0.15)', color: '#c084fc' }}>
-                  <UserIcon size={28} />
-                </div>
-                <div>
-                  <div className="stat-value">{users.length}</div>
-                  <div className="stat-label">Пользователей сервиса</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="glass-panel" style={{ padding: '2rem' }}>
-              <h3 style={{ fontSize: '1.2rem', marginBottom: '1rem' }}>Популярность жанров в каталоге</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
-                {genres.map(genre => {
-                  const count = books.filter(b => b.genre === genre).length;
-                  const percentage = Math.round((count / books.length) * 100);
-                  return (
-                    <div key={genre}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', marginBottom: '0.3rem' }}>
-                        <span>{genre}</span>
-                        <span style={{ color: 'var(--text-muted)' }}>{count} книг ({percentage}%)</span>
-                      </div>
-                      <div style={{ background: 'rgba(255,255,255,0.06)', height: '8px', borderRadius: '4px', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            width: `${percentage}%`,
-                            height: '100%',
-                            background: 'linear-gradient(90deg, var(--primary), var(--accent-purple))',
-                            borderRadius: '4px',
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 6: AUTHENTICATION (LOGIN / REGISTER) */}
-        {activeTab === 'auth' && (
-          <div className="animate-fade-in" style={{ maxWidth: '420px', margin: '2rem auto' }}>
-            <div className="glass-panel" style={{ padding: '2rem' }}>
-              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, textAlign: 'center', marginBottom: '1.5rem' }}>
-                {authMode === 'login' ? 'Вход в систему' : 'Регистрация'}
-              </h2>
-
-              {authError && (
-                <div style={{ background: 'rgba(244, 63, 94, 0.15)', color: '#fda4af', padding: '0.75rem', borderRadius: 'var(--radius-md)', marginBottom: '1rem', fontSize: '0.88rem' }}>
-                  {authError}
-                </div>
-              )}
-
-              <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {authMode === 'register' && (
+              <div className="details-owner-box glass-card">
+                <h3>Информация о владельце</h3>
+                <div className="owner-profile">
+                  <UserIcon className="owner-avatar" />
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Ваше имя *</label>
-                    <input
-                      type="text"
-                      className="input-field"
-                      required
-                      placeholder="Иван Иванов"
-                      value={authName}
-                      onChange={e => setAuthName(e.target.value)}
-                    />
+                    <h4>{selectedBook.ownerName}</h4>
+                    <p>Владелец книги</p>
+                  </div>
+                </div>
+
+                {selectedBook.status === 'Доступна' ? (
+                  currentUser ? (
+                    currentUser.id !== selectedBook.ownerId ? (
+                      <button
+                        className="btn btn-primary btn-block"
+                        onClick={() => handleBookExchange(selectedBook)}
+                      >
+                        Забронировать книгу
+                      </button>
+                    ) : (
+                      <p className="note">Вы являетесь владельцем этой книги</p>
+                    )
+                  ) : (
+                    <button
+                      className="btn btn-primary btn-block"
+                      onClick={() => setActiveTab('auth')}
+                    >
+                      Авторизуйтесь, чтобы забронировать
+                    </button>
+                  )
+                ) : (
+                  <p className="note warning-note">
+                    Книга сейчас недоступна для бронирования (Статус: {selectedBook.status})
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* 3. ADD / EDIT BOOK TAB */}
+        {activeTab === 'add' && currentUser && (
+          <section className="form-section glass-card">
+            <h2>{editingBookId ? 'Редактирование книги' : 'Добавление новой книги'}</h2>
+            <p className="form-subtitle">
+              Заполните форму, чтобы разместить свою книгу на платформе книгообмена
+            </p>
+
+            <form onSubmit={handleCreateOrUpdateBook} className="book-form">
+              <div className="form-group">
+                <label>Название книги *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Например: Мастер и Маргарита"
+                  value={bookForm.title}
+                  onChange={(e) => setBookForm({ ...bookForm, title: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Автор *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Например: Михаил Булгаков"
+                  value={bookForm.author}
+                  onChange={(e) => setBookForm({ ...bookForm, author: e.target.value })}
+                />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Жанр *</label>
+                  <select
+                    value={bookForm.genre}
+                    onChange={(e) => setBookForm({ ...bookForm, genre: e.target.value })}
+                  >
+                    <option value="Классика">Классика</option>
+                    <option value="Фантастика">Фантастика</option>
+                    <option value="Программирование">Программирование</option>
+                    <option value="Антиутопия">Антиутопия</option>
+                    <option value="Детектив">Детектив</option>
+                    <option value="Приключения">Приключения</option>
+                    <option value="Роман">Роман</option>
+                    <option value="Другое">Другое</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>Год издания *</label>
+                  <input
+                    type="number"
+                    required
+                    min="1800"
+                    max={new Date().getFullYear()}
+                    value={bookForm.year}
+                    onChange={(e) => setBookForm({ ...bookForm, year: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Состояние книги *</label>
+                <select
+                  value={bookForm.condition}
+                  onChange={(e) => setBookForm({ ...bookForm, condition: e.target.value })}
+                >
+                  <option value="Новое">Новое (идеальное)</option>
+                  <option value="Отличное">Отличное (без дефектов)</option>
+                  <option value="Хорошее">Хорошее (небольшие следы использования)</option>
+                  <option value="Зачитанное">Зачитанное (видимые следы чтения)</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label>Место передачи (метро, вуз или удобный район) *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Например: Москва, м. Университет, возле ГЗ МГУ"
+                  value={bookForm.pickupLocation}
+                  onChange={(e) => setBookForm({ ...bookForm, pickupLocation: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Описание книги *</label>
+                <textarea
+                  rows={4}
+                  required
+                  placeholder="Опишите сюжет или особенности издания..."
+                  value={bookForm.description}
+                  onChange={(e) => setBookForm({ ...bookForm, description: e.target.value })}
+                />
+              </div>
+
+              <div className="form-actions">
+                <button type="button" className="btn btn-secondary" onClick={() => setActiveTab('catalog')}>
+                  Отмена
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  {editingBookId ? 'Сохранить изменения' : 'Опубликовать книгу'}
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
+
+        {/* 4. PROFILE / DASHBOARD TAB */}
+        {activeTab === 'profile' && currentUser && (
+          <section className="profile-section">
+            <div className="profile-header glass-card">
+              <UserIcon className="profile-avatar" />
+              <div>
+                <h2>{currentUser.name}</h2>
+                <p className="profile-email">{currentUser.email}</p>
+                <span className="badge badge-primary">Участник сообщества BookShare</span>
+              </div>
+            </div>
+
+            {/* User My Books */}
+            <div className="dashboard-block glass-card">
+              <h3>Мои выложенные книги</h3>
+              {books.filter((b) => b.ownerId === currentUser.id).length === 0 ? (
+                <p className="empty-text">Вы пока не выложили ни одной книги на обмен</p>
+              ) : (
+                <div className="table-responsive">
+                  <table className="custom-table">
+                    <thead>
+                      <tr>
+                        <th>Название</th>
+                        <th>Автор</th>
+                        <th>Жанр</th>
+                        <th>Статус</th>
+                        <th>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {books
+                        .filter((b) => b.ownerId === currentUser.id)
+                        .map((b) => (
+                          <tr key={b.id}>
+                            <td>
+                              <strong>{b.title}</strong>
+                            </td>
+                            <td>{b.author}</td>
+                            <td>{b.genre}</td>
+                            <td>{renderStatusBadge(b.status)}</td>
+                            <td className="table-actions">
+                              <button
+                                className="icon-action-btn edit-btn"
+                                onClick={() => handleStartEdit(b)}
+                                title="Редактировать"
+                              >
+                                <Edit3 className="icon-sm" />
+                              </button>
+                              <button
+                                className="icon-action-btn delete-btn"
+                                onClick={() => handleDeleteBook(b.id)}
+                                title="Удалить"
+                              >
+                                <Trash2 className="icon-sm" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Exchange History & Status Management */}
+            <div className="dashboard-block glass-card">
+              <h3>История и статус обменов</h3>
+              {exchanges.length === 0 ? (
+                <p className="empty-text">У вас пока нет активных или завершенных обменов</p>
+              ) : (
+                <div className="table-responsive">
+                  <table className="custom-table">
+                    <thead>
+                      <tr>
+                        <th>Книга</th>
+                        <th>Владелец</th>
+                        <th>Получатель</th>
+                        <th>Дата бронирования</th>
+                        <th>Текущий статус</th>
+                        <th>Управление (для владельца)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exchanges.map((ex) => (
+                        <tr key={ex.id}>
+                          <td>
+                            <strong>{ex.bookTitle}</strong>
+                          </td>
+                          <td>{ex.ownerName}</td>
+                          <td>{ex.recipientName}</td>
+                          <td>{new Date(ex.bookingDate).toLocaleDateString('ru-RU')}</td>
+                          <td>{renderStatusBadge(ex.status)}</td>
+                          <td>
+                            {ex.ownerId === currentUser.id ? (
+                              <select
+                                className="status-select"
+                                value={ex.status}
+                                onChange={(e) =>
+                                  handleChangeStatus(ex.id, e.target.value as BookStatus)
+                                }
+                              >
+                                <option value="Забронирована">Забронирована</option>
+                                <option value="Выдана">Выдана</option>
+                                <option value="Возвращена">Возвращена</option>
+                                <option value="Доступна">Доступна (Отменить)</option>
+                              </select>
+                            ) : (
+                              <span className="read-only-text">Ожидает действий владельца</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* 5. STATISTICS TAB */}
+        {activeTab === 'stats' && (
+          <section className="stats-section">
+            <div className="section-header">
+              <h2>Аналитика и статистика сервиса</h2>
+              <p>Текущие показатели активности системы книгообмена в реальном времени</p>
+            </div>
+
+            {stats ? (
+              <>
+                <div className="stats-grid">
+                  <div className="stat-card glass-card">
+                    <BookOpen className="stat-icon icon-blue" />
+                    <div className="stat-value">{stats.totalBooks}</div>
+                    <div className="stat-label">Всего книг в системе</div>
+                  </div>
+
+                  <div className="stat-card glass-card">
+                    <CheckCircle className="stat-icon icon-green" />
+                    <div className="stat-value">{stats.availableBooks}</div>
+                    <div className="stat-label">Доступно для заказа</div>
+                  </div>
+
+                  <div className="stat-card glass-card">
+                    <Clock className="stat-icon icon-orange" />
+                    <div className="stat-value">{stats.bookedBooks}</div>
+                    <div className="stat-label">Забронировано книг</div>
+                  </div>
+
+                  <div className="stat-card glass-card">
+                    <ArrowRightLeft className="stat-icon icon-purple" />
+                    <div className="stat-value">{stats.completedExchanges}</div>
+                    <div className="stat-label">Завершённых обменов</div>
+                  </div>
+
+                  <div className="stat-card glass-card">
+                    <UserIcon className="stat-icon icon-teal" />
+                    <div className="stat-value">{stats.totalUsers}</div>
+                    <div className="stat-label">Зарегистрированных пользователей</div>
+                  </div>
+                </div>
+
+                <div className="genre-stats-box glass-card">
+                  <h3>Распределение книг по жанрам</h3>
+                  <div className="genre-bars">
+                    {stats.genreDistribution.map((item) => {
+                      const percentage = Math.round((item.count / (stats.totalBooks || 1)) * 100);
+                      return (
+                        <div key={item.genre} className="genre-bar-item">
+                          <div className="genre-info">
+                            <span>{item.genre}</span>
+                            <span>
+                              {item.count} шт. ({percentage}%)
+                            </span>
+                          </div>
+                          <div className="progress-bar-bg">
+                            <div
+                              className="progress-bar-fill"
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty-state glass-card">
+                <RefreshCw className="spin-icon" /> Загрузка статистики...
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* 6. AUTHENTICATION TAB */}
+        {activeTab === 'auth' && (
+          <section className="auth-section">
+            <div className="auth-card glass-card">
+              <h2>{authMode === 'login' ? 'Вход в аккаунт' : 'Регистрация'}</h2>
+              <p className="auth-subtitle">
+                {authMode === 'login'
+                  ? 'Введите логин и пароль для доступа к обмену книгами'
+                  : 'Создайте учетную запись для участия в книгообмене'}
+              </p>
+
+              {authError && <div className="auth-error-badge">{authError}</div>}
+
+              <form onSubmit={authMode === 'login' ? handleLogin : handleRegister}>
+                {authMode === 'register' && (
+                  <div className="form-group">
+                    <label>Ваше имя *</label>
+                    <div className="input-with-icon">
+                      <UserIcon className="input-icon" />
+                      <input
+                        type="text"
+                        required
+                        placeholder="Алексей Иванов"
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                      />
+                    </div>
                   </div>
                 )}
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Email *</label>
-                  <input
-                    type="email"
-                    className="input-field"
-                    required
-                    placeholder="ivan@example.com"
-                    value={authEmail}
-                    onChange={e => setAuthEmail(e.target.value)}
-                  />
+                <div className="form-group">
+                  <label>Email адрес *</label>
+                  <div className="input-with-icon">
+                    <UserIcon className="input-icon" />
+                    <input
+                      type="email"
+                      required
+                      placeholder="alexey@example.com"
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.88rem', marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Пароль *</label>
-                  <input
-                    type="password"
-                    className="input-field"
-                    required
-                    placeholder="••••••••"
-                  />
+                <div className="form-group">
+                  <label>Пароль *</label>
+                  <div className="input-with-icon">
+                    <Lock className="input-icon" />
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                    />
+                  </div>
                 </div>
 
-                <button type="submit" className="btn-primary" style={{ marginTop: '0.5rem' }}>
-                  {authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
+                <button type="submit" className="btn btn-primary btn-block mt-4">
+                  {authMode === 'login' ? 'Войти в аккаунт' : 'Зарегистрироваться'}
                 </button>
               </form>
 
-              <div style={{ textAlign: 'center', marginTop: '1.25rem', fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+              <div className="auth-toggle">
                 {authMode === 'login' ? (
-                  <span>
+                  <p>
                     Нет аккаунта?{' '}
-                    <button
-                      onClick={() => { setAuthMode('register'); setAuthError(''); }}
-                      style={{ background: 'none', border: 'none', color: '#a5b4fc', cursor: 'pointer', fontWeight: 600 }}
+                    <span
+                      onClick={() => {
+                        setAuthMode('register');
+                        setAuthError('');
+                      }}
                     >
                       Зарегистрироваться
-                    </button>
-                  </span>
+                    </span>
+                  </p>
                 ) : (
-                  <span>
+                  <p>
                     Уже есть аккаунт?{' '}
-                    <button
-                      onClick={() => { setAuthMode('login'); setAuthError(''); }}
-                      style={{ background: 'none', border: 'none', color: '#a5b4fc', cursor: 'pointer', fontWeight: 600 }}
+                    <span
+                      onClick={() => {
+                        setAuthMode('login');
+                        setAuthError('');
+                      }}
                     >
                       Войти
-                    </button>
-                  </span>
+                    </span>
+                  </p>
                 )}
               </div>
             </div>
-          </div>
+          </section>
         )}
       </main>
-
-      {/* Footer */}
-      <footer className="app-footer">
-        <div>BookShare — Лабораторная работа №1 по курсу «Fullstack»</div>
-      </footer>
     </div>
   );
 }
-
-export default App;

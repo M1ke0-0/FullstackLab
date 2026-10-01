@@ -1,0 +1,7 @@
+fastapi<0.110.0
+uvicorn
+sqlalchemy
+pyjwt
+passlib
+bcrypt
+pydantic<2.10.0

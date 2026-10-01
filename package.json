@@ -1,0 +1,12 @@
+{
+  "name": "bookshare-fullstack-labs",
+  "version": "1.0.0",
+  "description": "Fullstack platform BookShare - Labs 1 to 5 (Python FastAPI Backend)",
+  "scripts": {
+    "setup": "cd backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt && ./venv/bin/python seed.py && cd ../frontend && npm install",
+    "dev:backend": "cd backend && ./venv/bin/python main.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "build": "npm run build:frontend"
+  }
+}

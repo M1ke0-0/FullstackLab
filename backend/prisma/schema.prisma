@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id               String     @id @default(uuid())
+  name             String
+  email            String     @unique
+  password         String
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  books            Book[]     @relation("UserBooks")
+  asOwnerExchanges Booking[]  @relation("OwnerExchanges")
+  asRecipientExchanges Booking[] @relation("RecipientExchanges")
+}
+
+model Book {
+  id             String    @id @default(uuid())
+  title          String
+  author         String
+  genre          String
+  year           Int
+  description    String
+  condition      String
+  pickupLocation String
+  status         String    @default("Доступна") // "Доступна" | "Забронирована" | "Выдана" | "Возвращена"
+  ownerId        String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  owner          User      @relation("UserBooks", fields: [ownerId], references: [id], onDelete: Cascade)
+  exchanges      Booking[]
+}
+
+model Booking {
+  id             String    @id @default(uuid())
+  bookId         String
+  ownerId        String
+  recipientId    String
+  bookingDate    DateTime  @default(now())
+  completionDate DateTime?
+  status         String    @default("Забронирована") // "Доступна" | "Забронирована" | "Выдана" | "Возвращена"
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  book           Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  owner          User      @relation("OwnerExchanges", fields: [ownerId], references: [id], onDelete: Cascade)
+  recipient      User      @relation("RecipientExchanges", fields: [recipientId], references: [id], onDelete: Cascade)
+}
